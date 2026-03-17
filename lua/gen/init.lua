@@ -61,6 +61,8 @@ local default_options = {
     json_response = true,
     display_mode = "float",
     no_auto_close = false,
+    win_open_hook = function() end,
+    win_open_hook_delay = 300,
     init = function() pcall(io.popen, "ollama serve > /dev/null 2>&1 &") end,
     list_models = function(options)
         local response = vim.fn.systemlist(
@@ -249,13 +251,23 @@ local function hide_streaming_status()
     globals.streaming_status_visible = false
 end
 
-local function expand_all_folds()
-    if globals.float_win == nil or
-        not vim.api.nvim_win_is_valid(globals.float_win) then return end
+local function schedule_win_open_hook(opts)
+    local target_win = globals.float_win
+    local target_buf = globals.result_buffer
+    local win_open_hook = opts.win_open_hook or M.win_open_hook
+    local win_open_hook_delay = opts.win_open_hook_delay or M.win_open_hook_delay
 
-    vim.api.nvim_win_call(globals.float_win, function()
-        vim.cmd("silent! normal! zR")
-    end)
+    vim.defer_fn(function()
+        if target_win == nil or target_buf == nil then return end
+        if globals.float_win ~= target_win or globals.result_buffer ~= target_buf then
+            return
+        end
+        if not vim.api.nvim_win_is_valid(target_win) or
+            not vim.api.nvim_buf_is_valid(target_buf) then return end
+        if vim.api.nvim_win_get_buf(target_win) ~= target_buf then return end
+
+        win_open_hook(target_win, target_buf, opts)
+    end, win_open_hook_delay)
 end
 
 local function create_window(cmd, opts)
@@ -282,24 +294,24 @@ local function create_window(cmd, opts)
         globals.float_win = vim.api.nvim_open_win(globals.result_buffer, true,
                                                   win_opts)
         setup_window()
-        expand_all_folds()
+        schedule_win_open_hook(opts)
     elseif display_mode == "horizontal-split" then
         vim.cmd("split gen.nvim")
         setup_window()
-        expand_all_folds()
+        schedule_win_open_hook(opts)
     elseif display_mode == "vertical-split" then
         vim.cmd("vnew gen.nvim")
         setup_window()
-        expand_all_folds()
+        schedule_win_open_hook(opts)
     elseif display_mode == "no-split" then
         vim.cmd("edit gen.nvim")
         setup_window()
-        expand_all_folds()
+        schedule_win_open_hook(opts)
     else
         vim.notify("Gen.nvim warning : Invalid display mode specified.", vim.log.levels.WARN)
         vim.cmd("edit gen.nvim")
         setup_window()
-        expand_all_folds()
+        schedule_win_open_hook(opts)
     end
     vim.keymap.set("n", "<esc>", function()
         if globals.job_id then vim.fn.jobstop(globals.job_id) end

@@ -115,28 +115,14 @@ local function run_streaming_command()
   return callbacks, buffer, win, cleanup
 end
 
-local function run_streaming_command_with_closed_markdown_fold(display_mode)
-  local fold_group = vim.api.nvim_create_augroup("GenFoldTest", { clear = true })
+local function run_streaming_command_with_win_open_hook(display_mode, after_open)
+  local original_defer_fn = vim.defer_fn
+  local scheduled_callbacks = {}
 
-  vim.api.nvim_create_autocmd("FileType", {
-    group = fold_group,
-    pattern = "markdown",
-    callback = function(args)
-      vim.api.nvim_set_option_value("modifiable", true, { buf = args.buf })
-      vim.api.nvim_buf_set_lines(args.buf, 0, -1, false, {
-        "# Heading 1",
-        "line 1",
-        "# Heading 2",
-        "line 2",
-      })
-      vim.api.nvim_win_call(0, function()
-        vim.api.nvim_set_option_value("foldmethod", "manual", { win = 0 })
-        vim.cmd("1,2fold")
-        vim.cmd("3,4fold")
-        vim.cmd("normal! zM")
-      end)
-    end,
-  })
+  vim.defer_fn = function(fn, delay)
+    table.insert(scheduled_callbacks, { fn = fn, delay = delay })
+    return #scheduled_callbacks
+  end
 
   local gen = reload_gen()
   local callbacks
@@ -153,7 +139,8 @@ local function run_streaming_command_with_closed_markdown_fold(display_mode)
   vim.o.shada = ""
   vim.cmd("enew")
 
-  gen.run_command("fake command", {
+  local hook_calls = {}
+  local options = {
     debug = false,
     display_mode = display_mode,
     hidden = false,
@@ -165,21 +152,31 @@ local function run_streaming_command_with_closed_markdown_fold(display_mode)
     show_model = false,
     show_prompt = false,
     win_config = {},
-  })
+    win_open_hook = function(win_id, bufnr, opts)
+      table.insert(hook_calls, {
+        win_id = win_id,
+        bufnr = bufnr,
+        opts = opts,
+      })
+    end,
+    win_open_hook_delay = 450,
+  }
+
+  gen.run_command("fake command", options)
 
   local buffer = vim.api.nvim_get_current_buf()
   local win = vim.api.nvim_get_current_win()
-  local closed_fold = vim.api.nvim_win_call(win, function()
-    return vim.fn.foldclosed(1)
-  end)
+  if after_open then
+    after_open(buffer, win, options)
+  end
 
   local function cleanup()
     vim.fn.jobstart = original_jobstart
     vim.fn.jobstop = original_jobstop
-    pcall(vim.api.nvim_del_augroup_by_id, fold_group)
+    vim.defer_fn = original_defer_fn
   end
 
-  return callbacks, buffer, win, closed_fold, cleanup
+  return callbacks, buffer, win, hook_calls, scheduled_callbacks, options, cleanup
 end
 
 local default_cmd = select(1, run_exec("__unset__"))
@@ -221,13 +218,37 @@ assert_contains(completed_text, "Hi", "expected streamed content to remain after
 cleanup_streaming()
 
 for _, display_mode in ipairs({ "float", "horizontal-split", "vertical-split", "no-split" }) do
-  local _, fold_buffer, fold_win, closed_fold, cleanup_fold_test =
-      run_streaming_command_with_closed_markdown_fold(display_mode)
-  assert_truthy(vim.api.nvim_buf_is_valid(fold_buffer), "expected fold test buffer to be valid")
-  assert_truthy(vim.api.nvim_win_is_valid(fold_win), "expected fold test window to be valid")
-  assert_eq(-1, closed_fold,
-            string.format("expected folds to be expanded in %s mode", display_mode))
-  cleanup_fold_test()
+  local _, hook_buffer, hook_win, hook_calls, scheduled_callbacks, options, cleanup_hook_test =
+      run_streaming_command_with_win_open_hook(display_mode)
+  assert_truthy(vim.api.nvim_buf_is_valid(hook_buffer), "expected hook test buffer to be valid")
+  assert_truthy(vim.api.nvim_win_is_valid(hook_win), "expected hook test window to be valid")
+  assert_eq(1, #scheduled_callbacks,
+            string.format("expected one delayed win_open_hook in %s mode", display_mode))
+  assert_eq(options.win_open_hook_delay, scheduled_callbacks[1].delay,
+            string.format("expected configured win_open_hook_delay in %s mode", display_mode))
+  assert_eq(0, #hook_calls,
+            string.format("expected hook not to run before the scheduled callback in %s mode", display_mode))
+  scheduled_callbacks[1].fn()
+  assert_eq(1, #hook_calls,
+            string.format("expected win_open_hook to run once in %s mode", display_mode))
+  assert_eq(hook_win, hook_calls[1].win_id,
+            string.format("expected win_open_hook win_id in %s mode", display_mode))
+  assert_eq(hook_buffer, hook_calls[1].bufnr,
+            string.format("expected win_open_hook bufnr in %s mode", display_mode))
+  assert_eq(options, hook_calls[1].opts,
+            string.format("expected win_open_hook opts in %s mode", display_mode))
+  cleanup_hook_test()
 end
+
+local _, stale_buffer, stale_win, stale_hook_calls, stale_scheduled_callbacks, _, cleanup_stale_hook =
+    run_streaming_command_with_win_open_hook("float", function()
+      vim.cmd("enew")
+    end)
+assert_truthy(vim.api.nvim_buf_is_valid(stale_buffer), "expected stale hook buffer to be valid before replacement")
+assert_truthy(vim.api.nvim_win_is_valid(stale_win), "expected stale hook window to be valid before replacement")
+assert_eq(1, #stale_scheduled_callbacks, "expected stale hook callback to be scheduled")
+stale_scheduled_callbacks[1].fn()
+assert_eq(0, #stale_hook_calls, "expected stale win_open_hook to be skipped")
+cleanup_stale_hook()
 
 print("file option tests passed")

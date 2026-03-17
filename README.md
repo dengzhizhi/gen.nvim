@@ -51,6 +51,8 @@ Example with Lazy
         no_auto_close = false, -- Never closes the window automatically.
         file = false, -- `true` always uses a temp file, `"auto"` only when the JSON body exceeds 800 KiB.
         hidden = false, -- Hide the generation window (if true, will implicitly set `prompt.replace = true`), requires Neovim >= 0.10
+        win_open_hook = function(win_id, bufnr, options) end, -- Run after the result window opens; receives the window id, buffer number, and resolved options.
+        win_open_hook_delay = 300, -- Delay in milliseconds before `win_open_hook` runs.
         init = function(options) pcall(io.popen, "ollama serve > /dev/null 2>&1 &") end,
         -- Function to initialize Ollama
         command = function(options)
@@ -75,6 +77,20 @@ Alternatively, you can call the `setup` function:
 ```lua
 require('gen').setup({
   -- same as above
+})
+```
+
+If you want to expand all folds after the result window opens, configure a delayed
+`win_open_hook` instead of relying on built-in folding behavior:
+
+```lua
+require('gen').setup({
+  win_open_hook = function(win_id)
+    vim.api.nvim_win_call(win_id, function()
+      vim.cmd("silent! normal! zR")
+    end)
+  end,
+  win_open_hook_delay = 1000,
 })
 ```
 
