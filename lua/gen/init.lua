@@ -1,6 +1,7 @@
 local prompts = require("gen.prompts")
 local M = {}
 local AUTO_FILE_BODY_THRESHOLD = 800 * 1024
+local STREAMING_STATUS_LINE = "--- streaming ---"
 
 local globals = {}
 local function reset(keep_selection)
@@ -18,6 +19,7 @@ local function reset(keep_selection)
     globals.result_string = ""
     globals.context = nil
     globals.context_buffer = nil
+    globals.streaming_status_visible = false
     if globals.temp_filename then
         os.remove(globals.temp_filename)
         globals.temp_filename = nil
@@ -164,6 +166,20 @@ local function write_to_buffer(lines)
     if not globals.result_buffer or
         not vim.api.nvim_buf_is_valid(globals.result_buffer) then return end
 
+    local had_streaming_status = globals.streaming_status_visible
+    if had_streaming_status then
+        local buffer_lines = vim.api.nvim_buf_get_lines(globals.result_buffer, 0,
+                                                        -1, false)
+        if buffer_lines[#buffer_lines] == STREAMING_STATUS_LINE then
+            vim.api.nvim_set_option_value("modifiable", true,
+                                          {buf = globals.result_buffer})
+            vim.api.nvim_buf_set_lines(globals.result_buffer, #buffer_lines - 1,
+                                       #buffer_lines, false, {})
+            vim.api.nvim_set_option_value("modifiable", false,
+                                          {buf = globals.result_buffer})
+        end
+    end
+
     local all_lines = vim.api.nvim_buf_get_lines(globals.result_buffer, 0, -1,
                                                  false)
 
@@ -190,6 +206,47 @@ local function write_to_buffer(lines)
 
     vim.api.nvim_set_option_value("modifiable", false,
                                   {buf = globals.result_buffer})
+
+    if had_streaming_status and globals.result_buffer and
+        vim.api.nvim_buf_is_valid(globals.result_buffer) then
+        vim.api.nvim_set_option_value("modifiable", true,
+                                      {buf = globals.result_buffer})
+        vim.api.nvim_buf_set_lines(globals.result_buffer, -1, -1, false,
+                                   {STREAMING_STATUS_LINE})
+        vim.api.nvim_set_option_value("modifiable", false,
+                                      {buf = globals.result_buffer})
+    end
+end
+
+local function show_streaming_status()
+    if globals.streaming_status_visible or not globals.result_buffer or
+        not vim.api.nvim_buf_is_valid(globals.result_buffer) then return end
+
+    vim.api.nvim_set_option_value("modifiable", true, {buf = globals.result_buffer})
+    vim.api.nvim_buf_set_lines(globals.result_buffer, -1, -1, false,
+                               {STREAMING_STATUS_LINE})
+    vim.api.nvim_set_option_value("modifiable", false, {buf = globals.result_buffer})
+    globals.streaming_status_visible = true
+end
+
+local function hide_streaming_status()
+    if not globals.streaming_status_visible or not globals.result_buffer or
+        not vim.api.nvim_buf_is_valid(globals.result_buffer) then
+        globals.streaming_status_visible = false
+        return
+    end
+
+    local buffer_lines = vim.api.nvim_buf_get_lines(globals.result_buffer, 0, -1,
+                                                    false)
+    if buffer_lines[#buffer_lines] == STREAMING_STATUS_LINE then
+        vim.api.nvim_set_option_value("modifiable", true,
+                                      {buf = globals.result_buffer})
+        vim.api.nvim_buf_set_lines(globals.result_buffer, #buffer_lines - 1,
+                                   #buffer_lines, false, {})
+        vim.api.nvim_set_option_value("modifiable", false,
+                                      {buf = globals.result_buffer})
+    end
+    globals.streaming_status_visible = false
 end
 
 local function create_window(cmd, opts)
@@ -420,6 +477,7 @@ M.run_command = function(cmd, opts)
             write_to_buffer({"# Chat with " .. opts.model, ""})
         end
     end
+    show_streaming_status()
     local partial_data = ""
     if opts.debug then print(cmd) end
 
@@ -481,6 +539,7 @@ M.run_command = function(cmd, opts)
             end
         end,
         on_exit = function(_, b)
+            hide_streaming_status()
             if b == 0 and opts.replace and globals.result_buffer then
                 close_window(opts)
             end

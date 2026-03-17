@@ -23,6 +23,12 @@ local function assert_eq(expected, actual, message)
   end
 end
 
+local function assert_contains(value, pattern, message)
+  if not string.find(value, pattern, 1, true) then
+    error(message or string.format("expected %q to contain %q", value, pattern))
+  end
+end
+
 local function run_exec(file_option, prompt)
   local gen = reload_gen()
   local captured_cmd
@@ -69,6 +75,45 @@ local function make_large_prompt(target_bytes)
   return string.rep("a", target_bytes)
 end
 
+local function run_streaming_command()
+  local gen = reload_gen()
+  local callbacks
+  local original_jobstart = vim.fn.jobstart
+  local original_jobstop = vim.fn.jobstop
+
+  vim.fn.jobstart = function(_, job_opts)
+    callbacks = job_opts
+    return 99
+  end
+  vim.fn.jobstop = function() end
+
+  vim.o.swapfile = false
+  vim.o.shada = ""
+  vim.cmd("enew")
+
+  gen.run_command("fake command", {
+    debug = false,
+    display_mode = "float",
+    hidden = false,
+    json_response = true,
+    model = "test-model",
+    no_auto_close = false,
+    replace = false,
+    result_filetype = "markdown",
+    show_model = false,
+    show_prompt = false,
+    win_config = {},
+  })
+
+  local buffer = vim.api.nvim_get_current_buf()
+  local function cleanup()
+    vim.fn.jobstart = original_jobstart
+    vim.fn.jobstop = original_jobstop
+  end
+
+  return callbacks, buffer, cleanup
+end
+
 local default_cmd = select(1, run_exec("__unset__"))
 assert_falsy(default_cmd:match("@"), "default file option should inline the JSON body")
 
@@ -88,5 +133,23 @@ local auto_large_cmd, auto_large_temp = run_exec("auto", auto_large_prompt)
 assert_truthy(auto_large_cmd:match("@"), "file='auto' should use a temp file for large JSON bodies")
 assert_truthy(auto_large_temp and vim.loop.fs_stat(auto_large_temp), "expected temp file to exist for large auto payload")
 cleanup_tempfile(auto_large_temp)
+
+local callbacks, buffer, cleanup_streaming = run_streaming_command()
+assert_truthy(callbacks and callbacks.on_stdout and callbacks.on_exit, "expected streaming callbacks to be captured")
+
+local initial_text = table.concat(vim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n")
+assert_contains(initial_text, "--- streaming ---", "expected streaming indicator while the job is running")
+
+callbacks.on_stdout(nil, { [[{"message":{"content":"Hi"},"done":false}]] }, nil)
+local streaming_text = table.concat(vim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n")
+assert_contains(streaming_text, "Hi", "expected streamed content to be written to the buffer")
+assert_contains(streaming_text, "--- streaming ---", "expected streaming indicator to remain visible during streaming")
+
+callbacks.on_exit(nil, 0)
+local completed_text = table.concat(vim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n")
+assert_falsy(string.find(completed_text, "--- streaming ---", 1, true), "expected streaming indicator to be removed on exit")
+assert_contains(completed_text, "Hi", "expected streamed content to remain after exit")
+
+cleanup_streaming()
 
 print("file option tests passed")
