@@ -1,5 +1,6 @@
 local prompts = require("gen.prompts")
 local M = {}
+local AUTO_FILE_BODY_THRESHOLD = 800 * 1024
 
 local globals = {}
 local function reset(keep_selection)
@@ -388,16 +389,19 @@ M.exec = function(options)
             body = vim.tbl_extend("force", body, opts.model_options)
         end
 
-        if opts.file ~= nil then
-            local json = opts.json(body, false)
+        local json = opts.json(body, false)
+        local use_temp_file = opts.file == true or
+                                  (opts.file == "auto" and
+                                      #json > AUTO_FILE_BODY_THRESHOLD)
+
+        if use_temp_file then
             globals.temp_filename = os.tmpname()
             local fhandle = io.open(globals.temp_filename, "w")
             fhandle:write(json)
             fhandle:close()
             cmd = string.gsub(cmd, "%$body", "@" .. globals.temp_filename)
         else
-            local json = opts.json(body, true)
-            cmd = string.gsub(cmd, "%$body", json)
+            cmd = string.gsub(cmd, "%$body", opts.json(body, true))
         end
     end
 

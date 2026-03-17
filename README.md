@@ -49,7 +49,7 @@ Example with Lazy
         show_prompt = false, -- Shows the prompt submitted to Ollama. Can be true (3 lines) or "full".
         show_model = false, -- Displays which model you are using at the beginning of your chat session.
         no_auto_close = false, -- Never closes the window automatically.
-        file = false, -- Write the payload to a temporary file to keep the command short.
+        file = false, -- `true` always uses a temp file, `"auto"` only when the JSON body exceeds 800 KiB.
         hidden = false, -- Hide the generation window (if true, will implicitly set `prompt.replace = true`), requires Neovim >= 0.10
         init = function(options) pcall(io.popen, "ollama serve > /dev/null 2>&1 &") end,
         -- Function to initialize Ollama
