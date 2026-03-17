@@ -249,6 +249,15 @@ local function hide_streaming_status()
     globals.streaming_status_visible = false
 end
 
+local function expand_all_folds()
+    if globals.float_win == nil or
+        not vim.api.nvim_win_is_valid(globals.float_win) then return end
+
+    vim.api.nvim_win_call(globals.float_win, function()
+        vim.cmd("silent! normal! zR")
+    end)
+end
+
 local function create_window(cmd, opts)
     local function setup_window()
         globals.result_buffer = vim.fn.bufnr("%")
@@ -273,19 +282,24 @@ local function create_window(cmd, opts)
         globals.float_win = vim.api.nvim_open_win(globals.result_buffer, true,
                                                   win_opts)
         setup_window()
+        expand_all_folds()
     elseif display_mode == "horizontal-split" then
         vim.cmd("split gen.nvim")
         setup_window()
+        expand_all_folds()
     elseif display_mode == "vertical-split" then
         vim.cmd("vnew gen.nvim")
         setup_window()
+        expand_all_folds()
     elseif display_mode == "no-split" then
         vim.cmd("edit gen.nvim")
         setup_window()
+        expand_all_folds()
     else
         vim.notify("Gen.nvim warning : Invalid display mode specified.", vim.log.levels.WARN)
         vim.cmd("edit gen.nvim")
         setup_window()
+        expand_all_folds()
     end
     vim.keymap.set("n", "<esc>", function()
         if globals.job_id then vim.fn.jobstop(globals.job_id) end

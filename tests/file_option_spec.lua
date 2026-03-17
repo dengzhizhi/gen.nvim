@@ -106,12 +106,80 @@ local function run_streaming_command()
   })
 
   local buffer = vim.api.nvim_get_current_buf()
+  local win = vim.api.nvim_get_current_win()
   local function cleanup()
     vim.fn.jobstart = original_jobstart
     vim.fn.jobstop = original_jobstop
   end
 
-  return callbacks, buffer, cleanup
+  return callbacks, buffer, win, cleanup
+end
+
+local function run_streaming_command_with_closed_markdown_fold(display_mode)
+  local fold_group = vim.api.nvim_create_augroup("GenFoldTest", { clear = true })
+
+  vim.api.nvim_create_autocmd("FileType", {
+    group = fold_group,
+    pattern = "markdown",
+    callback = function(args)
+      vim.api.nvim_set_option_value("modifiable", true, { buf = args.buf })
+      vim.api.nvim_buf_set_lines(args.buf, 0, -1, false, {
+        "# Heading 1",
+        "line 1",
+        "# Heading 2",
+        "line 2",
+      })
+      vim.api.nvim_win_call(0, function()
+        vim.api.nvim_set_option_value("foldmethod", "manual", { win = 0 })
+        vim.cmd("1,2fold")
+        vim.cmd("3,4fold")
+        vim.cmd("normal! zM")
+      end)
+    end,
+  })
+
+  local gen = reload_gen()
+  local callbacks
+  local original_jobstart = vim.fn.jobstart
+  local original_jobstop = vim.fn.jobstop
+
+  vim.fn.jobstart = function(_, job_opts)
+    callbacks = job_opts
+    return 99
+  end
+  vim.fn.jobstop = function() end
+
+  vim.o.swapfile = false
+  vim.o.shada = ""
+  vim.cmd("enew")
+
+  gen.run_command("fake command", {
+    debug = false,
+    display_mode = display_mode,
+    hidden = false,
+    json_response = true,
+    model = "test-model",
+    no_auto_close = false,
+    replace = false,
+    result_filetype = "markdown",
+    show_model = false,
+    show_prompt = false,
+    win_config = {},
+  })
+
+  local buffer = vim.api.nvim_get_current_buf()
+  local win = vim.api.nvim_get_current_win()
+  local closed_fold = vim.api.nvim_win_call(win, function()
+    return vim.fn.foldclosed(1)
+  end)
+
+  local function cleanup()
+    vim.fn.jobstart = original_jobstart
+    vim.fn.jobstop = original_jobstop
+    pcall(vim.api.nvim_del_augroup_by_id, fold_group)
+  end
+
+  return callbacks, buffer, win, closed_fold, cleanup
 end
 
 local default_cmd = select(1, run_exec("__unset__"))
@@ -134,7 +202,7 @@ assert_truthy(auto_large_cmd:match("@"), "file='auto' should use a temp file for
 assert_truthy(auto_large_temp and vim.loop.fs_stat(auto_large_temp), "expected temp file to exist for large auto payload")
 cleanup_tempfile(auto_large_temp)
 
-local callbacks, buffer, cleanup_streaming = run_streaming_command()
+local callbacks, buffer, _, cleanup_streaming = run_streaming_command()
 assert_truthy(callbacks and callbacks.on_stdout and callbacks.on_exit, "expected streaming callbacks to be captured")
 
 local initial_text = table.concat(vim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n")
@@ -151,5 +219,15 @@ assert_falsy(string.find(completed_text, "--- streaming ---", 1, true), "expecte
 assert_contains(completed_text, "Hi", "expected streamed content to remain after exit")
 
 cleanup_streaming()
+
+for _, display_mode in ipairs({ "float", "horizontal-split", "vertical-split", "no-split" }) do
+  local _, fold_buffer, fold_win, closed_fold, cleanup_fold_test =
+      run_streaming_command_with_closed_markdown_fold(display_mode)
+  assert_truthy(vim.api.nvim_buf_is_valid(fold_buffer), "expected fold test buffer to be valid")
+  assert_truthy(vim.api.nvim_win_is_valid(fold_win), "expected fold test window to be valid")
+  assert_eq(-1, closed_fold,
+            string.format("expected folds to be expanded in %s mode", display_mode))
+  cleanup_fold_test()
+end
 
 print("file option tests passed")
