@@ -524,25 +524,66 @@ M.run_command = function(cmd, opts)
                 return
             end
             if opts.debug then vim.print('Response data: ', data) end
-            for _, line in ipairs(data) do
-                partial_data = partial_data .. line
-                if line:sub(-1) == "}" then
-                    partial_data = partial_data .. "\n"
+            -- Reconstruct stream content (Neovim splits data on \n)
+            for i, line in ipairs(data) do
+                if i == 1 then
+                    partial_data = partial_data .. line
+                else
+                    partial_data = partial_data .. "\n" .. line
                 end
             end
 
-            local lines = vim.split(partial_data, "\n", {trimempty = true})
+            -- Extract and process complete JSON objects using brace depth
+            -- counting, so multi-line JSON (e.g. GLM-5) is handled correctly
+            while #partial_data > 0 do
+                local s = vim.trim(partial_data)
+                if #s == 0 then partial_data = "" break end
 
-            partial_data = table.remove(lines) or ""
+                -- Strip SSE "data: " prefix when in JSON mode
+                if opts.json_response and s:sub(1, 6) == "data: " then
+                    s = vim.trim(s:sub(7))
+                end
+                if s == "[DONE]" then partial_data = "" break end
 
-            for _, line in ipairs(lines) do
-                Process_response(line, globals.job_id, opts.json_response)
-            end
-
-            if partial_data:sub(-1) == "}" then
-                Process_response(partial_data, globals.job_id,
-                                 opts.json_response)
-                partial_data = ""
+                if opts.json_response and
+                    (s:sub(1, 1) == "{" or s:sub(1, 1) == "[") then
+                    -- Find the end of the outermost JSON object/array
+                    local depth, in_str, esc, end_pos = 0, false, false, nil
+                    for i = 1, #s do
+                        local c = s:sub(i, i)
+                        if esc then esc = false
+                        elseif in_str and c == '\\' then esc = true
+                        elseif c == '"' then in_str = not in_str
+                        elseif not in_str then
+                            if c == '{' or c == '[' then depth = depth + 1
+                            elseif c == '}' or c == ']' then
+                                depth = depth - 1
+                                if depth == 0 then end_pos = i break end
+                            end
+                        end
+                    end
+                    if end_pos then
+                        Process_response(s:sub(1, end_pos), globals.job_id,
+                                         opts.json_response)
+                        partial_data = s:sub(end_pos + 1)
+                    else
+                        partial_data = s -- incomplete object, wait for more
+                        break
+                    end
+                else
+                    -- Non-JSON mode or incomplete prefix (e.g. "data" not yet
+                    -- followed by ": {...}"): process line by line, but if
+                    -- there is no newline yet, save and wait for more data
+                    local nl = s:find("\n")
+                    if nl then
+                        Process_response(s:sub(1, nl - 1), globals.job_id,
+                                         opts.json_response)
+                        partial_data = s:sub(nl + 1)
+                    else
+                        partial_data = s -- incomplete line, wait for more
+                        break
+                    end
+                end
             end
         end,
         on_stderr = function(_, data, _)
