@@ -539,9 +539,9 @@ M.run_command = function(cmd, opts)
                 local s = vim.trim(partial_data)
                 if #s == 0 then partial_data = "" break end
 
-                -- Strip SSE "data: " prefix when in JSON mode
-                if opts.json_response and s:sub(1, 6) == "data: " then
-                    s = vim.trim(s:sub(7))
+                -- Strip SSE "data:" prefix (with or without trailing space)
+                if opts.json_response and s:sub(1, 5) == "data:" then
+                    s = vim.trim(s:sub(6))
                 end
                 if s == "[DONE]" then partial_data = "" break end
 
