@@ -708,13 +708,35 @@ function Process_response(str, json_response)
     local text
 
     if json_response then
-        -- llamacpp response string -- 'data: {"content": "hello", .... }' -- remove 'data: ' prefix, before json_decode
-        if string.sub(str, 1, 6) == "data: " then
-            str = string.gsub(str, "data: ", "", 1)
+        -- Strip SSE "data:" prefix (with or without trailing space)
+        if string.sub(str, 1, 5) == "data:" then
+            str = vim.trim(str:sub(6))
         end
         local success, result = pcall(function()
             return vim.fn.json_decode(str)
         end)
+        -- Fallback: if decode failed and str looks like concatenated JSON objects
+        -- (e.g. two chunks merged without separator), extract the first complete
+        -- object via depth counting and retry.
+        if not success and (str:sub(1, 1) == "{" or str:sub(1, 1) == "[") then
+            local depth, in_str, esc = 0, false, false
+            for i = 1, #str do
+                local c = str:sub(i, i)
+                if esc then esc = false
+                elseif in_str and c == '\\' then esc = true
+                elseif c == '"' then in_str = not in_str
+                elseif not in_str then
+                    if c == '{' or c == '[' then depth = depth + 1
+                    elseif c == '}' or c == ']' then
+                        depth = depth - 1
+                        if depth == 0 then
+                            success, result = pcall(vim.fn.json_decode, str:sub(1, i))
+                            break
+                        end
+                    end
+                end
+            end
+        end
 
         if success then
             if result.message and result.message.content then -- ollama chat endpoint
