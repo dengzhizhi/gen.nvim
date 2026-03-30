@@ -708,6 +708,9 @@ function Process_response(str, json_response)
     local text
 
     if json_response then
+        -- Trim surrounding whitespace first (handles \r\n line endings
+        -- from some APIs that would otherwise break prefix matching)
+        str = vim.trim(str)
         -- Strip SSE "data:" prefix (with or without trailing space)
         if string.sub(str, 1, 5) == "data:" then
             str = vim.trim(str:sub(6))
