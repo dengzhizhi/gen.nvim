@@ -271,9 +271,12 @@ local function schedule_win_open_hook(opts)
 end
 
 local function create_window(cmd, opts)
-    local function setup_window()
-        globals.result_buffer = vim.fn.bufnr("%")
-        globals.float_win = vim.fn.win_getid()
+    -- buf/win: when provided (float mode), use them directly instead of
+    -- re-reading bufnr("%")/win_getid() which can be wrong if autocmds
+    -- fired by nvim_open_win (e.g. oil.nvim BufEnter) changed the focus.
+    local function setup_window(buf, win)
+        globals.result_buffer = buf or vim.fn.bufnr("%")
+        globals.float_win = win or vim.fn.win_getid()
         vim.api.nvim_set_option_value("filetype", opts.result_filetype,
                                       {buf = globals.result_buffer})
         vim.api.nvim_set_option_value("buftype", "nofile",
@@ -293,7 +296,7 @@ local function create_window(cmd, opts)
         globals.result_buffer = vim.api.nvim_create_buf(false, true)
         globals.float_win = vim.api.nvim_open_win(globals.result_buffer, true,
                                                   win_opts)
-        setup_window()
+        setup_window(globals.result_buffer, globals.float_win)
         schedule_win_open_hook(opts)
     elseif display_mode == "horizontal-split" then
         vim.cmd("split gen.nvim")
