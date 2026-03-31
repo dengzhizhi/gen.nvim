@@ -179,6 +179,81 @@ local function run_streaming_command_with_win_open_hook(display_mode, after_open
   return callbacks, buffer, win, hook_calls, scheduled_callbacks, options, cleanup
 end
 
+local function capture_cmds_while(fn)
+  local original_cmd = vim.cmd
+  local commands = {}
+
+  vim.cmd = function(command)
+    if type(command) == "string" then
+      table.insert(commands, command)
+    end
+    return original_cmd(command)
+  end
+
+  local ok, result_a, result_b, result_c = pcall(fn)
+  vim.cmd = original_cmd
+
+  if not ok then
+    error(result_a)
+  end
+
+  return commands, result_a, result_b, result_c
+end
+
+local function with_cwd(cwd, fn)
+  local original_cwd = vim.fn.getcwd()
+  local project_root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
+  vim.cmd("set rtp+=" .. vim.fn.fnameescape(project_root))
+  vim.cmd("cd " .. vim.fn.fnameescape(cwd))
+
+  local ok, result_a, result_b, result_c = pcall(fn)
+  vim.cmd("cd " .. vim.fn.fnameescape(original_cwd))
+
+  if not ok then
+    error(result_a)
+  end
+
+  return result_a, result_b, result_c
+end
+
+local function capture_notifications_while(fn)
+  local original_notify = vim.notify
+  local notifications = {}
+
+  vim.notify = function(message, level)
+    table.insert(notifications, { message = message, level = level })
+  end
+
+  local ok, result_a, result_b, result_c = pcall(fn)
+  vim.notify = original_notify
+
+  if not ok then
+    error(result_a)
+  end
+
+  return notifications, result_a, result_b, result_c
+end
+
+local function delete_named_gen_buffers()
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_valid(bufnr) then
+      local tail = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":t")
+      if tail == "gen.nvim" or tail:match("^gen%.nvim %[%d+%]$") then
+        pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+      end
+    end
+  end
+end
+
+local function close_result_view(buffer, win)
+  if win and vim.api.nvim_win_is_valid(win) then
+    pcall(vim.api.nvim_win_close, win, true)
+  end
+  if buffer and vim.api.nvim_buf_is_valid(buffer) then
+    pcall(vim.api.nvim_buf_delete, buffer, { force = true })
+  end
+end
+
 local default_cmd = select(1, run_exec("__unset__"))
 assert_falsy(default_cmd:match("@"), "default file option should inline the JSON body")
 
@@ -237,6 +312,7 @@ for _, display_mode in ipairs({ "float", "horizontal-split", "vertical-split", "
             string.format("expected win_open_hook bufnr in %s mode", display_mode))
   assert_eq(options, hook_calls[1].opts,
             string.format("expected win_open_hook opts in %s mode", display_mode))
+  close_result_view(hook_buffer, hook_win)
   cleanup_hook_test()
 end
 
@@ -249,6 +325,61 @@ assert_truthy(vim.api.nvim_win_is_valid(stale_win), "expected stale hook window 
 assert_eq(1, #stale_scheduled_callbacks, "expected stale hook callback to be scheduled")
 stale_scheduled_callbacks[1].fn()
 assert_eq(0, #stale_hook_calls, "expected stale win_open_hook to be skipped")
+close_result_view(stale_buffer, stale_win)
 cleanup_stale_hook()
+
+delete_named_gen_buffers()
+local vertical_cmds, vertical_buffer, vertical_win, cleanup_vertical_split =
+    capture_cmds_while(function()
+      local _, hook_buffer, hook_win, _, _, _, cleanup_hook_test =
+          run_streaming_command_with_win_open_hook("vertical-split")
+      return hook_buffer, hook_win, cleanup_hook_test
+    end)
+assert_truthy(vim.api.nvim_buf_is_valid(vertical_buffer), "expected vertical split buffer to be valid")
+assert_truthy(vim.api.nvim_win_is_valid(vertical_win), "expected vertical split window to be valid")
+assert_falsy(vim.tbl_contains(vertical_cmds, "vnew gen.nvim"),
+             "expected vertical split to avoid opening gen.nvim as a path")
+assert_eq("gen.nvim", vim.fn.fnamemodify(vim.api.nvim_buf_get_name(vertical_buffer), ":t"),
+          "expected vertical split buffer name to stay gen.nvim")
+assert_eq("nofile", vim.api.nvim_get_option_value("buftype", { buf = vertical_buffer }),
+          "expected vertical split result buffer to stay scratch-backed")
+close_result_view(vertical_buffer, vertical_win)
+cleanup_vertical_split()
+
+local project_root = vim.fn.fnamemodify(vim.fn.getcwd(), ":p")
+local parent_dir = vim.fn.fnamemodify(project_root, ":h")
+delete_named_gen_buffers()
+local cwd_buffer, cwd_win, cleanup_cwd_split = with_cwd(parent_dir, function()
+  local _, hook_buffer, hook_win, _, _, _, cleanup_hook_test =
+      run_streaming_command_with_win_open_hook("vertical-split")
+  return hook_buffer, hook_win, cleanup_hook_test
+end)
+assert_truthy(vim.api.nvim_buf_is_valid(cwd_buffer), "expected cwd regression buffer to be valid")
+assert_truthy(vim.api.nvim_win_is_valid(cwd_win), "expected cwd regression window to be valid")
+assert_eq("gen.nvim", vim.fn.fnamemodify(vim.api.nvim_buf_get_name(cwd_buffer), ":t"),
+          "expected cwd regression buffer name to stay gen.nvim")
+assert_eq("nofile", vim.api.nvim_get_option_value("buftype", { buf = cwd_buffer }),
+          "expected cwd regression buffer to stay scratch-backed")
+close_result_view(cwd_buffer, cwd_win)
+cleanup_cwd_split()
+
+delete_named_gen_buffers()
+local name_collision_notifications, collision_buffer, _, cleanup_collision_split =
+    capture_notifications_while(function()
+      local existing = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_name(existing, "gen.nvim")
+
+      local _, hook_buffer, hook_win, _, _, _, cleanup_hook_test =
+          run_streaming_command_with_win_open_hook("vertical-split")
+
+      vim.api.nvim_buf_delete(existing, { force = true })
+      return hook_buffer, hook_win, cleanup_hook_test
+    end)
+assert_truthy(vim.api.nvim_buf_is_valid(collision_buffer), "expected collision buffer to be valid")
+assert_truthy(vim.fn.fnamemodify(vim.api.nvim_buf_get_name(collision_buffer), ":t") ~= "",
+              "expected collision buffer to receive a fallback name")
+assert_truthy(#name_collision_notifications > 0, "expected collision rename to notify")
+close_result_view(collision_buffer)
+cleanup_collision_split()
 
 print("file option tests passed")

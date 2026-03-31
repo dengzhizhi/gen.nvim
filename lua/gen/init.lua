@@ -286,6 +286,36 @@ local function create_window(cmd, opts)
                                       {win = globals.float_win})
     end
 
+    local function set_result_buffer_name()
+        if globals.result_buffer == nil or
+            not vim.api.nvim_buf_is_valid(globals.result_buffer) then return end
+
+        -- Set the display name after the window exists so Neovim does not try
+        -- to open "gen.nvim" as a path (which can resolve to the plugin
+        -- directory and trigger directory browsers).
+        local preferred_name = "gen.nvim"
+        local ok = pcall(vim.api.nvim_buf_set_name, globals.result_buffer,
+                         preferred_name)
+        if ok then return preferred_name end
+
+        for i = 2, 99 do
+            local fallback_name = string.format("gen.nvim [%d]", i)
+            ok = pcall(vim.api.nvim_buf_set_name, globals.result_buffer,
+                       fallback_name)
+            if ok then
+                vim.notify(
+                    string.format(
+                        "Gen.nvim warning : result buffer name '%s' is already in use, using '%s' instead.",
+                        preferred_name, fallback_name), vim.log.levels.WARN)
+                return fallback_name
+            end
+        end
+
+        vim.notify(
+            "Gen.nvim warning : could not assign a unique result buffer name.",
+            vim.log.levels.WARN)
+    end
+
     local display_mode = opts.display_mode or M.display_mode
     if display_mode == "float" then
         if globals.result_buffer then
@@ -299,21 +329,25 @@ local function create_window(cmd, opts)
         setup_window(globals.result_buffer, globals.float_win)
         schedule_win_open_hook(opts)
     elseif display_mode == "horizontal-split" then
-        vim.cmd("split gen.nvim")
+        vim.cmd("new")
         setup_window()
+        set_result_buffer_name()
         schedule_win_open_hook(opts)
     elseif display_mode == "vertical-split" then
-        vim.cmd("vnew gen.nvim")
+        vim.cmd("vnew")
         setup_window()
+        set_result_buffer_name()
         schedule_win_open_hook(opts)
     elseif display_mode == "no-split" then
-        vim.cmd("edit gen.nvim")
+        vim.cmd("enew")
         setup_window()
+        set_result_buffer_name()
         schedule_win_open_hook(opts)
     else
         vim.notify("Gen.nvim warning : Invalid display mode specified.", vim.log.levels.WARN)
-        vim.cmd("edit gen.nvim")
+        vim.cmd("enew")
         setup_window()
+        set_result_buffer_name()
         schedule_win_open_hook(opts)
     end
     vim.keymap.set("n", "<esc>", function()
