@@ -536,24 +536,40 @@ M.run_command = function(cmd, opts)
                 end
             end
 
-            -- Extract and process complete JSON objects using brace depth
-            -- counting, so multi-line JSON (e.g. GLM-5) is handled correctly
+            -- Extract and process complete JSON objects.
+            --
+            -- Key insight: every JSON object starts with '{'. The SSE prefix
+            -- ("data:", "data: ", "\rdata:", absent, etc.) always comes BEFORE
+            -- that '{'. So we find '{' directly and ignore whatever precedes
+            -- it. This is agnostic to all prefix variants and eliminates the
+            -- entire class of "fragile prefix stripping" errors seen with
+            -- GLM-5 and similar APIs.
             while #partial_data > 0 do
-                local s = vim.trim(partial_data)
-                if #s == 0 then partial_data = "" break end
+                if opts.json_response then
+                    -- Locate the start of the next JSON object/array.
+                    local json_start = partial_data:find("[{[]")
 
-                -- Strip SSE "data:" prefix (with or without trailing space)
-                if opts.json_response and s:sub(1, 5) == "data:" then
-                    s = vim.trim(s:sub(6))
-                end
-                if s == "[DONE]" then partial_data = "" break end
+                    if not json_start then
+                        -- No '{' yet. Keep partial_data in case more bytes
+                        -- arrive. If we already have [DONE], we're finished.
+                        if partial_data:find("%[DONE%]") then
+                            partial_data = ""
+                        end
+                        break
+                    end
 
-                if opts.json_response and
-                    (s:sub(1, 1) == "{" or s:sub(1, 1) == "[") then
-                    -- Find the end of the outermost JSON object/array
+                    -- If [DONE] appears before the next '{', the stream ended.
+                    local done_pos = partial_data:find("%[DONE%]")
+                    if done_pos and done_pos <= json_start then
+                        partial_data = ""
+                        break
+                    end
+
+                    -- Depth-count from json_start to find the matching close.
+                    local str = partial_data:sub(json_start)
                     local depth, in_str, esc, end_pos = 0, false, false, nil
-                    for i = 1, #s do
-                        local c = s:sub(i, i)
+                    for i = 1, #str do
+                        local c = str:sub(i, i)
                         if esc then esc = false
                         elseif in_str and c == '\\' then esc = true
                         elseif c == '"' then in_str = not in_str
@@ -565,26 +581,29 @@ M.run_command = function(cmd, opts)
                             end
                         end
                     end
+
                     if end_pos then
-                        Process_response(s:sub(1, end_pos), globals.job_id,
+                        Process_response(str:sub(1, end_pos), globals.job_id,
                                          opts.json_response)
-                        partial_data = s:sub(end_pos + 1)
+                        -- Drop everything up to and including the extracted
+                        -- object; the next iteration picks up the remainder.
+                        partial_data = str:sub(end_pos + 1)
                     else
-                        partial_data = s -- incomplete object, wait for more
+                        -- Incomplete object — wait for more data.
+                        -- Start accumulation from '{' to avoid re-scanning
+                        -- the already-discarded prefix bytes.
+                        partial_data = str
                         break
                     end
                 else
-                    -- Non-JSON mode or incomplete prefix (e.g. "data" not yet
-                    -- followed by ": {...}"): process line by line, but if
-                    -- there is no newline yet, save and wait for more data
-                    local nl = s:find("\n")
+                    -- Non-JSON mode: deliver one line at a time.
+                    local nl = partial_data:find("\n")
                     if nl then
-                        Process_response(s:sub(1, nl - 1), globals.job_id,
-                                         opts.json_response)
-                        partial_data = s:sub(nl + 1)
+                        Process_response(partial_data:sub(1, nl - 1),
+                                         globals.job_id, opts.json_response)
+                        partial_data = partial_data:sub(nl + 1)
                     else
-                        partial_data = s -- incomplete line, wait for more
-                        break
+                        break -- incomplete line, wait for more
                     end
                 end
             end
